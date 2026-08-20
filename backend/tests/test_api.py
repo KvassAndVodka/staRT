@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient, ASGITransport
 from app.main import app
+from app.config import settings
 from app.adapters.storage.database import init_db, AsyncSessionLocal
 from app.domain.models import SessionModel, InferenceWindowModel, AudioAssetModel
 from sqlalchemy import select, update, func
@@ -19,6 +20,9 @@ async def test_health_endpoint():
         data = response.json()
         assert data["status"] == "ok"
         assert "default_device" in data
+        assert data["final_diarization"]["enabled"] is False
+        assert data["final_diarization"]["model_id"] == "pyannote-community-1"
+        assert data["final_diarization"]["local_model_available"] is False
 
 @pytest.mark.asyncio
 async def test_session_lifecycle_and_trash():
@@ -100,6 +104,25 @@ async def test_session_lifecycle_and_trash():
                 .where(AudioAssetModel.session_id == session_id)
             )).scalar()
             assert asset_count == 0
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_unconfigured_diarization_model(monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_FINAL_DIARIZATION", True)
+    monkeypatch.setattr(settings, "DEFAULT_DIARIZATION_MODEL", "pyannote-community-1")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        with patch(
+            "app.api.routes_sessions.coordinator.start_job",
+            new_callable=AsyncMock,
+        ) as start_job:
+            response = await ac.post("/api/sessions", json={
+                "url": "https://example.com/test_audio.mp3",
+                "diarization_model": "untrusted/remote-model",
+            })
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Unsupported diarization model"}
+    start_job.assert_not_awaited()
 
 
 @pytest.mark.asyncio

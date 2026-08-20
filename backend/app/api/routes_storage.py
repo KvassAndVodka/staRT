@@ -54,6 +54,7 @@ async def get_storage_summary(db: AsyncSession = Depends(get_db)):
 async def health_check():
     """Health check returning compute device capabilities."""
     cuda_devices = ctranslate2.get_cuda_device_count()
+    diarization_model_path = settings.final_diarization_model_path
     return {
         "status": "ok",
         "app": settings.APP_NAME,
@@ -61,5 +62,13 @@ async def health_check():
         "cuda_devices": cuda_devices,
         "default_device": "cuda" if cuda_devices > 0 else "cpu",
         "default_model": settings.DEFAULT_ASR_MODEL,
-        "default_compute_type": settings.DEFAULT_COMPUTE_TYPE
+        "default_compute_type": settings.DEFAULT_COMPUTE_TYPE,
+        "final_diarization": {
+            "enabled": settings.ENABLE_FINAL_DIARIZATION,
+            "model_id": settings.DEFAULT_DIARIZATION_MODEL,
+            "local_model_available": (
+                diarization_model_path.is_dir() or diarization_model_path.is_file()
+            ),
+            "requested_device": settings.FINAL_DIARIZATION_DEVICE,
+        },
     }

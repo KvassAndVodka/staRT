@@ -24,6 +24,12 @@ router = APIRouter()
 @router.post("/sessions", response_model=SessionSummarySchema, status_code=status.HTTP_201_CREATED)
 async def create_session(req: SessionCreateRequest, db: AsyncSession = Depends(get_db)):
     """Create a new transcription session and queue/start ingestion."""
+    diarization_model = req.diarization_model or settings.DEFAULT_DIARIZATION_MODEL
+    if (
+        settings.ENABLE_FINAL_DIARIZATION
+        and diarization_model != settings.DEFAULT_DIARIZATION_MODEL
+    ):
+        raise HTTPException(status_code=400, detail="Unsupported diarization model")
     session_id = str(uuid.uuid4())
     new_session = SessionModel(
         id=session_id,
@@ -35,7 +41,7 @@ async def create_session(req: SessionCreateRequest, db: AsyncSession = Depends(g
         language_mode=req.language_mode,
         allowed_languages=req.allowed_languages,
         asr_model=req.asr_model or settings.DEFAULT_ASR_MODEL,
-        diarization_model=req.diarization_model or "pyannote-community-1",
+        diarization_model=diarization_model,
     )
     db.add(new_session)
     await db.commit()
