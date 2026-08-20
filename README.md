@@ -24,7 +24,7 @@ Built against [`live-transcription-service-spec-plan.md`](./live-transcription-s
 ### 1. Prerequisites
 - Linux with FFmpeg installed (`ffmpeg -version`)
 - Python 3.11 / 3.12 (managed via `uv` or system Python)
-- Node.js 24 LTS and npm. Node.js 26 is checked for forward compatibility.
+- Node.js 24 LTS and npm 11. Node.js 26 with npm 11 is checked for forward compatibility.
 - NVIDIA GPU (RTX 3050 Ti Mobile 4GB or RTX 3050 6GB recommended; CPU fallback supported)
 
 ### 2. Run Locally
