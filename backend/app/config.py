@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     MAX_FRAGMENT_DURATION_SEC: float = 2.0
     INFERENCE_SAMPLE_RATE: int = 16000
     SOURCE_STALL_THRESHOLD_SEC: float = 3.0
+    EVENT_REPLAY_LIMIT: int = 512
     
     # Server host & port
     HOST: str = "127.0.0.1"

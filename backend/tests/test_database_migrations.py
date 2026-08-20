@@ -29,19 +29,33 @@ def _schema_contract(sync_connection):
     audio_asset_columns = {
         item["name"] for item in inspector.get_columns("audio_assets")
     }
+    session_columns = {item["name"] for item in inspector.get_columns("sessions")}
+    outbox_columns = {item["name"] for item in inspector.get_columns("outbox_events")}
+    outbox_indexes = {item["name"] for item in inspector.get_indexes("outbox_events")}
+    outbox_constraints = {
+        item.get("name") for item in inspector.get_check_constraints("outbox_events")
+    }
     return (
         audio_constraints,
         window_constraints,
         _unique_column_sets(sync_connection, "audio_fragments"),
         _unique_column_sets(sync_connection, "inference_windows"),
         audio_asset_columns,
+        session_columns,
+        outbox_columns,
+        outbox_indexes,
+        outbox_constraints,
     )
 
 
 @pytest.mark.asyncio
 async def test_clean_schema_contains_durable_constraints():
     async with engine.connect() as connection:
-        audio, windows, audio_keys, window_keys, asset_columns = await connection.run_sync(_schema_contract)
+        (
+            audio, windows, audio_keys, window_keys, asset_columns,
+            session_columns, outbox_columns, outbox_indexes,
+            outbox_constraints,
+        ) = await connection.run_sync(_schema_contract)
     assert ("session_id", "stream_epoch", "sequence") in audio_keys
     assert "chk_fragment_sample_count" in audio
     assert "chk_durable_fragment_sha" in audio
@@ -53,6 +67,10 @@ async def test_clean_schema_contains_durable_constraints():
     ) in window_keys
     assert "chk_target_sample_interval" in windows
     assert "provenance" in asset_columns
+    assert {"event_sequence", "event_replay_floor"}.issubset(session_columns)
+    assert "sequence" in outbox_columns
+    assert "uq_outbox_session_sequence" in outbox_indexes
+    assert "chk_outbox_positive_sequence" in outbox_constraints
 
 
 @pytest.mark.asyncio
@@ -67,6 +85,8 @@ async def test_retained_schema_is_rebuilt_and_fragment_samples_are_backfilled(tm
     def create_legacy(sync_connection):
         Base.metadata.create_all(sync_connection)
         sync_connection.exec_driver_sql("ALTER TABLE audio_assets DROP COLUMN provenance")
+        sync_connection.exec_driver_sql("ALTER TABLE sessions DROP COLUMN event_sequence")
+        sync_connection.exec_driver_sql("ALTER TABLE sessions DROP COLUMN event_replay_floor")
         sync_connection.exec_driver_sql("DROP TABLE outbox_events")
         sync_connection.exec_driver_sql("DROP TABLE inference_attempts")
         sync_connection.exec_driver_sql("DROP TABLE inference_windows")
@@ -117,6 +137,20 @@ async def test_retained_schema_is_rebuilt_and_fragment_samples_are_backfilled(tm
             )
             """
         )
+        sync_connection.exec_driver_sql(
+            """
+            CREATE TABLE outbox_events (
+                id VARCHAR(36) PRIMARY KEY,
+                session_id VARCHAR(36) NOT NULL,
+                window_id VARCHAR(36),
+                idempotency_key VARCHAR(255) NOT NULL UNIQUE,
+                event_type VARCHAR(100) NOT NULL,
+                payload JSON NOT NULL,
+                created_at DATETIME NOT NULL,
+                published_at DATETIME
+            )
+            """
+        )
         sync_connection.execute(text(
             "INSERT INTO sessions (id,title,source_url,source_type,status,processing_mode,"
             "language_mode,allowed_languages,created_at,updated_at,asr_model,"
@@ -137,9 +171,19 @@ async def test_retained_schema_is_rebuilt_and_fragment_samples_are_backfilled(tm
             "context_start_ms,context_end_ms,status,attempt_count,model_profile_revision) "
             "VALUES ('legacy-window','legacy-session',0,0,0,62,0,62,'pending',0,'1.0')"
         ))
+        sync_connection.execute(text(
+            "INSERT INTO outbox_events "
+            "(id,session_id,window_id,idempotency_key,event_type,payload,created_at,published_at) "
+            "VALUES "
+            "('legacy-event-1','legacy-session','legacy-window','legacy:1','test.one','{}',"
+            "'2026-01-01 00:00:00',CURRENT_TIMESTAMP),"
+            "('legacy-event-2','legacy-session','legacy-window','legacy:2','test.two','{}',"
+            "'2026-01-01 00:00:01',NULL)"
+        ))
 
     async with legacy_engine.begin() as connection:
         await connection.run_sync(create_legacy)
+        await connection.run_sync(_migrate_schema)
         await connection.run_sync(_migrate_schema)
 
     async with legacy_engine.connect() as connection:
@@ -149,6 +193,10 @@ async def test_retained_schema_is_rebuilt_and_fragment_samples_are_backfilled(tm
             audio_keys,
             window_keys,
             asset_columns,
+            session_columns,
+            outbox_columns,
+            outbox_indexes,
+            outbox_constraints,
         ) = await connection.run_sync(_schema_contract)
         row = (await connection.execute(text(
             "SELECT sample_start,sample_end,sample_count,status,sha256 "
@@ -157,6 +205,13 @@ async def test_retained_schema_is_rebuilt_and_fragment_samples_are_backfilled(tm
         version = (await connection.execute(text(
             "SELECT max(version) FROM schema_migrations"
         ))).scalar()
+        event_rows = (await connection.execute(text(
+            "SELECT id,sequence,payload FROM outbox_events ORDER BY sequence"
+        ))).all()
+        event_state = (await connection.execute(text(
+            "SELECT event_sequence,event_replay_floor FROM sessions "
+            "WHERE id='legacy-session'"
+        ))).one()
 
     assert row.sample_start == 0
     assert row.sample_end == 1001
@@ -173,5 +228,16 @@ async def test_retained_schema_is_rebuilt_and_fragment_samples_are_backfilled(tm
     ) in window_keys
     assert "chk_target_sample_interval" in window_constraints
     assert "provenance" in asset_columns
-    assert version == 3
+    assert {"event_sequence", "event_replay_floor"}.issubset(session_columns)
+    assert "sequence" in outbox_columns
+    assert "uq_outbox_session_sequence" in outbox_indexes
+    assert "chk_outbox_positive_sequence" in outbox_constraints
+    assert [(row.id, row.sequence) for row in event_rows] == [
+        ("legacy-event-1", 1),
+        ("legacy-event-2", 2),
+    ]
+    assert all(row.payload == "{}" for row in event_rows)
+    assert event_state.event_sequence == 2
+    assert event_state.event_replay_floor == 1
+    assert version == 4
     await legacy_engine.dispose()
