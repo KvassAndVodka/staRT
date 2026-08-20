@@ -72,7 +72,7 @@ class AudioAssetModel(Base):
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     session_id = Column(String(36), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
-    kind = Column(String(50), nullable=False)  # master, inference, fragment, separation_stem, export_mix
+    kind = Column(String(50), nullable=False)  # master, playback, inference, fragment, separation_stem, export_mix
     status = Column(String(50), nullable=False, default="writing")  # writing, finalizing, ready, deleting, purged, corrupt
     path = Column(Text, nullable=False)
     container = Column(String(50), nullable=True)
@@ -83,6 +83,7 @@ class AudioAssetModel(Base):
     size_bytes = Column(Integer, nullable=True)
     sha256 = Column(String(64), nullable=True)
     derived_from_id = Column(String(36), nullable=True)
+    provenance = Column(JSON, nullable=True)
     created_at = Column(DateTime, nullable=False, default=utc_now)
     deleted_at = Column(DateTime, nullable=True)
     schema_version = Column(String(20), nullable=False, default="1.0")
@@ -116,6 +117,7 @@ class AudioFragmentModel(Base):
     source_end_ms = Column(Integer, nullable=False)
     wall_started_at = Column(DateTime, nullable=False, default=utc_now)
     wall_ended_at = Column(DateTime, nullable=True)
+    # FFmpeg-normalized PCM PTS, with a time base of 1 / sample_rate_hz.
     source_pts_start = Column(Integer, nullable=True)
     source_pts_end = Column(Integer, nullable=True)
     path = Column(Text, nullable=False)
@@ -434,6 +436,8 @@ class AudioAssetSchema(BaseModel):
     duration_ms: Optional[int] = None
     size_bytes: Optional[int] = None
     sha256: Optional[str] = None
+    derived_from_id: Optional[str] = None
+    provenance: Optional[Dict[str, Any]] = None
 
 class SessionCreateRequest(BaseModel):
     url: str

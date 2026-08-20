@@ -62,3 +62,6 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Local review notes
+/REVIEW.md

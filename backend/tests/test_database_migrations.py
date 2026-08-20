@@ -26,18 +26,22 @@ def _schema_contract(sync_connection):
     window_constraints.update(
         item.get("name") for item in inspector.get_check_constraints("inference_windows")
     )
+    audio_asset_columns = {
+        item["name"] for item in inspector.get_columns("audio_assets")
+    }
     return (
         audio_constraints,
         window_constraints,
         _unique_column_sets(sync_connection, "audio_fragments"),
         _unique_column_sets(sync_connection, "inference_windows"),
+        audio_asset_columns,
     )
 
 
 @pytest.mark.asyncio
 async def test_clean_schema_contains_durable_constraints():
     async with engine.connect() as connection:
-        audio, windows, audio_keys, window_keys = await connection.run_sync(_schema_contract)
+        audio, windows, audio_keys, window_keys, asset_columns = await connection.run_sync(_schema_contract)
     assert ("session_id", "stream_epoch", "sequence") in audio_keys
     assert "chk_fragment_sample_count" in audio
     assert "chk_durable_fragment_sha" in audio
@@ -48,6 +52,7 @@ async def test_clean_schema_contains_durable_constraints():
         "ordinal",
     ) in window_keys
     assert "chk_target_sample_interval" in windows
+    assert "provenance" in asset_columns
 
 
 @pytest.mark.asyncio
@@ -61,6 +66,7 @@ async def test_retained_schema_is_rebuilt_and_fragment_samples_are_backfilled(tm
 
     def create_legacy(sync_connection):
         Base.metadata.create_all(sync_connection)
+        sync_connection.exec_driver_sql("ALTER TABLE audio_assets DROP COLUMN provenance")
         sync_connection.exec_driver_sql("DROP TABLE outbox_events")
         sync_connection.exec_driver_sql("DROP TABLE inference_attempts")
         sync_connection.exec_driver_sql("DROP TABLE inference_windows")
@@ -142,6 +148,7 @@ async def test_retained_schema_is_rebuilt_and_fragment_samples_are_backfilled(tm
             window_constraints,
             audio_keys,
             window_keys,
+            asset_columns,
         ) = await connection.run_sync(_schema_contract)
         row = (await connection.execute(text(
             "SELECT sample_start,sample_end,sample_count,status,sha256 "
@@ -165,5 +172,6 @@ async def test_retained_schema_is_rebuilt_and_fragment_samples_are_backfilled(tm
         "ordinal",
     ) in window_keys
     assert "chk_target_sample_interval" in window_constraints
-    assert version == 2
+    assert "provenance" in asset_columns
+    assert version == 3
     await legacy_engine.dispose()

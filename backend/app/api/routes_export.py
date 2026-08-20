@@ -122,7 +122,13 @@ async def export_session(
     } for gap in sorted(session.timeline_gaps, key=lambda item: item.wall_started_at)]
     display_turns = list(turns_data)
     for gap in timeline_gaps_data:
-        if gap["source_start_ms"] is None or gap["source_end_ms"] is None:
+        if (
+            gap["source_start_ms"] is None
+            or gap["source_end_ms"] is None
+            or gap["source_end_ms"] <= gap["source_start_ms"]
+        ):
+            # A zero-duration PTS reset is retained in the lossless JSON
+            # timeline, but it is not an unavailable-audio subtitle cue.
             continue
         display_turns.append({
             "id": f"gap-{gap['id']}",
