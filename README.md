@@ -44,10 +44,14 @@ cd backend && .venv/bin/pytest -v
 
 # Frontend lint, typecheck, & production build
 cd ../frontend && npm run lint && npm run typecheck && npm run build
+
+# Browser smoke tests (API and WebSocket requests are mocked)
+npx playwright install --with-deps --only-shell chromium
+npm run test:e2e
 ```
 
 GitHub Actions runs the backend suite on Python 3.11 and 3.12.
-It requires frontend checks on Node.js 24 LTS.
+It requires frontend lint, typecheck, build, and Chromium smoke tests on Node.js 24 LTS.
 The workflow also runs a non-blocking Node.js 26 typecheck and production build until Node.js 26 enters LTS.
 
 ## Event Delivery Contract
