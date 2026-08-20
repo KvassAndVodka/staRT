@@ -299,6 +299,132 @@ h1, h2, h3, h4, h5, h6 {
   cursor: pointer;
 }
 
+/* Final overlap review */
+.overlap-panel {
+  margin-bottom: 24px;
+  overflow: hidden;
+  background: rgba(14, 19, 31, 0.82);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 32px -18px rgba(0, 0, 0, 0.85);
+}
+
+.overlap-panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 20px;
+  background: rgba(245, 158, 11, 0.07);
+}
+
+.overlap-panel-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  color: #fbbf24;
+}
+
+.overlap-panel-title h2 {
+  margin-bottom: 3px;
+  color: #f8fafc;
+  font-size: 1rem;
+}
+
+.overlap-panel-title p {
+  color: #cbd5e1;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.overlap-count {
+  flex: none;
+  color: #fde68a;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.overlap-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.overlap-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 13px 20px;
+  color: var(--text-main);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition: background-color 160ms ease-out;
+}
+
+.overlap-row:hover,
+.overlap-row.active {
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.overlap-row:focus-visible {
+  outline: 2px solid #fbbf24;
+  outline-offset: -3px;
+}
+
+.overlap-time {
+  color: #fde68a;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+}
+
+.overlap-speakers {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.overlap-speaker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.overlap-speaker-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.overlap-status {
+  color: #cbd5e1;
+  font-size: 0.76rem;
+  text-transform: capitalize;
+}
+
+@media (max-width: 640px) {
+  .overlap-panel-heading {
+    align-items: flex-start;
+  }
+
+  .overlap-row {
+    grid-template-columns: 1fr auto;
+    gap: 8px 14px;
+  }
+
+  .overlap-speakers {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
 /* Live Streaming Pane */
 .transcript-stream-container {
   display: flex;

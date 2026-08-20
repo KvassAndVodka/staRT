@@ -35,6 +35,13 @@ def _schema_contract(sync_connection):
     outbox_constraints = {
         item.get("name") for item in inspector.get_check_constraints("outbox_events")
     }
+    speaker_indexes = {item["name"] for item in inspector.get_indexes("speakers")}
+    activity_indexes = {
+        item["name"] for item in inspector.get_indexes("speaker_activities")
+    }
+    overlap_indexes = {
+        item["name"] for item in inspector.get_indexes("overlap_regions")
+    }
     return (
         audio_constraints,
         window_constraints,
@@ -45,6 +52,9 @@ def _schema_contract(sync_connection):
         outbox_columns,
         outbox_indexes,
         outbox_constraints,
+        speaker_indexes,
+        activity_indexes,
+        overlap_indexes,
     )
 
 
@@ -55,6 +65,7 @@ async def test_clean_schema_contains_durable_constraints():
             audio, windows, audio_keys, window_keys, asset_columns,
             session_columns, outbox_columns, outbox_indexes,
             outbox_constraints,
+            speaker_indexes, activity_indexes, overlap_indexes,
         ) = await connection.run_sync(_schema_contract)
     assert ("session_id", "stream_epoch", "sequence") in audio_keys
     assert "chk_fragment_sample_count" in audio
@@ -71,6 +82,9 @@ async def test_clean_schema_contains_durable_constraints():
     assert "sequence" in outbox_columns
     assert "uq_outbox_session_sequence" in outbox_indexes
     assert "chk_outbox_positive_sequence" in outbox_constraints
+    assert "uq_speakers_session_machine_label" in speaker_indexes
+    assert "ix_speaker_activities_session_interval" in activity_indexes
+    assert "ix_overlap_regions_session_interval" in overlap_indexes
 
 
 @pytest.mark.asyncio
@@ -197,6 +211,9 @@ async def test_retained_schema_is_rebuilt_and_fragment_samples_are_backfilled(tm
             outbox_columns,
             outbox_indexes,
             outbox_constraints,
+            speaker_indexes,
+            activity_indexes,
+            overlap_indexes,
         ) = await connection.run_sync(_schema_contract)
         row = (await connection.execute(text(
             "SELECT sample_start,sample_end,sample_count,status,sha256 "
@@ -232,6 +249,9 @@ async def test_retained_schema_is_rebuilt_and_fragment_samples_are_backfilled(tm
     assert "sequence" in outbox_columns
     assert "uq_outbox_session_sequence" in outbox_indexes
     assert "chk_outbox_positive_sequence" in outbox_constraints
+    assert "uq_speakers_session_machine_label" in speaker_indexes
+    assert "ix_speaker_activities_session_interval" in activity_indexes
+    assert "ix_overlap_regions_session_interval" in overlap_indexes
     assert [(row.id, row.sequence) for row in event_rows] == [
         ("legacy-event-1", 1),
         ("legacy-event-2", 2),
@@ -239,5 +259,5 @@ async def test_retained_schema_is_rebuilt_and_fragment_samples_are_backfilled(tm
     assert all(row.payload == "{}" for row in event_rows)
     assert event_state.event_sequence == 2
     assert event_state.event_replay_floor == 1
-    assert version == 4
+    assert version == 5
     await legacy_engine.dispose()

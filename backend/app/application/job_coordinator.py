@@ -10,7 +10,7 @@ import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Sequence
 
 from sqlalchemy import select, update, delete, asc, func, and_, or_
 from sqlalchemy.exc import IntegrityError
@@ -58,6 +58,8 @@ from app.application.continuity import (
     ReconciledWord,
 )
 from app.application.event_stream import allocate_event_sequences
+from app.application.speaker_pipeline import FinalSpeakerPipeline, FinalSpeakerResult
+from app.ports.diarization import DiarizationEngine, DiarizationError, DiarizationSegment
 from app.api.websocket import ws_manager
 
 
@@ -73,6 +75,14 @@ class VerifiedEpochLedger:
     frontiers: Dict[int, int]
     source_offsets_ms: Dict[int, int]
     total_duration_ms: int
+
+
+@dataclass(frozen=True)
+class DiarizationTimelineSpan:
+    audio_start_ms: int
+    audio_end_ms: int
+    source_start_ms: int
+    source_end_ms: int
 
 
 class ReadinessValidationError(Exception):
@@ -95,6 +105,8 @@ class JobCoordinator:
         session_factory=None,
         event_publisher=None,
         inference_worker: Optional[InferenceWorker] = None,
+        diarization_engine: Optional[DiarizationEngine] = None,
+        speaker_pipeline: Optional[FinalSpeakerPipeline] = None,
         lease_duration_sec: float = 30.0,
         lease_heartbeat_sec: float = 10.0,
     ):
@@ -105,6 +117,8 @@ class JobCoordinator:
         self.current_engine: Optional[FasterWhisperASREngine] = None
         self.active_adapters: Dict[str, StreamIngestionAdapter] = {}
         self.inference_worker = inference_worker or InferenceWorker()
+        self.diarization_engine = diarization_engine
+        self.speaker_pipeline = speaker_pipeline or FinalSpeakerPipeline()
         self.lag_policy = lag_policy or LagPolicy()
         self.session_factory = session_factory or AsyncSessionLocal
         self.event_publisher = event_publisher or ws_manager
@@ -121,6 +135,8 @@ class JobCoordinator:
         name = model_name or settings.DEFAULT_ASR_MODEL
         if self.current_engine is None or self.current_model_name != name:
             await self.inference_worker.wait_idle()
+            if self.current_engine is not None:
+                await asyncio.to_thread(self.current_engine.close)
             self.current_engine = None
             self.current_model_name = None
             gc.collect()
@@ -254,6 +270,12 @@ class JobCoordinator:
                 pass
         self.active_task = None
         await self.inference_worker.close()
+        if self.current_engine is not None:
+            await asyncio.to_thread(self.current_engine.close)
+            self.current_engine = None
+            self.current_model_name = None
+        if self.diarization_engine is not None:
+            await self.diarization_engine.close()
 
     async def start_job(self, session_id: str) -> None:
         async with self._lock:
@@ -1261,6 +1283,131 @@ class JobCoordinator:
             ))
         await db.flush()
 
+    async def _run_final_diarization(
+        self,
+        session_id: str,
+        duration_ms: int,
+    ) -> Optional[Sequence[DiarizationSegment]]:
+        if self.diarization_engine is None:
+            return None
+        await self.inference_worker.wait_idle()
+        if self.current_engine is not None:
+            await asyncio.to_thread(self.current_engine.close)
+        self.current_engine = None
+        self.current_model_name = None
+        gc.collect()
+
+        async with self.session_factory() as db:
+            result = await db.execute(
+                select(AudioAssetModel)
+                .where(AudioAssetModel.session_id == session_id)
+                .where(AudioAssetModel.kind == "inference")
+                .where(AudioAssetModel.status == "ready")
+                .where(AudioAssetModel.deleted_at.is_(None))
+            )
+            asset = result.scalars().one_or_none()
+            fragments_result = await db.execute(
+                select(AudioFragmentModel)
+                .where(AudioFragmentModel.session_id == session_id)
+                .where(AudioFragmentModel.status == "durable")
+                .order_by(
+                    asc(AudioFragmentModel.stream_epoch),
+                    asc(AudioFragmentModel.sequence),
+                )
+            )
+            fragments = fragments_result.scalars().all()
+        if asset is None:
+            raise DiarizationError("A ready inference asset is required for final diarization")
+        path = Path(asset.path)
+        if not path.is_file():
+            raise DiarizationError("The final diarization audio asset is missing")
+        timeline = self._build_diarization_timeline(fragments, duration_ms)
+        audio_duration_ms = timeline[-1].audio_end_ms if timeline else duration_ms
+        try:
+            raw_segments = await self.diarization_engine.diarize(
+                path,
+                duration_ms=audio_duration_ms,
+            )
+            return self._map_diarization_segments(raw_segments, timeline)
+        finally:
+            await self.diarization_engine.close()
+
+    @staticmethod
+    def _build_diarization_timeline(
+        fragments: Sequence[AudioFragmentModel],
+        source_duration_ms: int,
+    ) -> list[DiarizationTimelineSpan]:
+        if not fragments:
+            return [DiarizationTimelineSpan(
+                audio_start_ms=0,
+                audio_end_ms=source_duration_ms,
+                source_start_ms=0,
+                source_end_ms=source_duration_ms,
+            )]
+        sample_rates = {fragment.sample_rate_hz for fragment in fragments}
+        if len(sample_rates) != 1:
+            raise DiarizationError("Final diarization requires one inference sample rate")
+        sample_rate = sample_rates.pop()
+        if sample_rate <= 0:
+            raise DiarizationError("Final diarization requires a positive sample rate")
+
+        spans: list[DiarizationTimelineSpan] = []
+        audio_samples = 0
+        for fragment in fragments:
+            if fragment.sample_count <= 0:
+                continue
+            audio_start_ms = JobCoordinator._sample_to_ms(audio_samples, sample_rate)
+            audio_samples += fragment.sample_count
+            audio_end_ms = JobCoordinator._sample_to_ms(audio_samples, sample_rate)
+            if audio_end_ms <= audio_start_ms:
+                raise DiarizationError("A diarization timeline span has no audio duration")
+            if fragment.source_end_ms <= fragment.source_start_ms:
+                raise DiarizationError("A diarization timeline span has no source duration")
+            spans.append(DiarizationTimelineSpan(
+                audio_start_ms=audio_start_ms,
+                audio_end_ms=audio_end_ms,
+                source_start_ms=fragment.source_start_ms,
+                source_end_ms=fragment.source_end_ms,
+            ))
+        if not spans:
+            raise DiarizationError("Final diarization requires durable audio samples")
+        return spans
+
+    @staticmethod
+    def _map_diarization_segments(
+        segments: Sequence[DiarizationSegment],
+        timeline: Sequence[DiarizationTimelineSpan],
+    ) -> list[DiarizationSegment]:
+        mapped: list[DiarizationSegment] = []
+        for segment in segments:
+            matched_ms = 0
+            for span in timeline:
+                overlap_start = max(segment.start_ms, span.audio_start_ms)
+                overlap_end = min(segment.end_ms, span.audio_end_ms)
+                if overlap_end <= overlap_start:
+                    continue
+                audio_duration = span.audio_end_ms - span.audio_start_ms
+                source_duration = span.source_end_ms - span.source_start_ms
+                source_start = span.source_start_ms + round(
+                    (overlap_start - span.audio_start_ms) * source_duration / audio_duration
+                )
+                source_end = span.source_start_ms + round(
+                    (overlap_end - span.audio_start_ms) * source_duration / audio_duration
+                )
+                if source_end > source_start:
+                    mapped.append(DiarizationSegment(
+                        machine_label=segment.machine_label,
+                        start_ms=source_start,
+                        end_ms=source_end,
+                        confidence=segment.confidence,
+                    ))
+                matched_ms += overlap_end - overlap_start
+            if matched_ms != segment.end_ms - segment.start_ms:
+                raise DiarizationError(
+                    f"Diarization interval for {segment.machine_label} is outside durable audio"
+                )
+        return mapped
+
     async def _finalize_session(
         self,
         session_id: str,
@@ -1297,8 +1444,20 @@ class JobCoordinator:
             recovery=recovery,
             sample_rate=sample_rate,
         )
+        diarization_segments = await self._run_final_diarization(
+            session_id,
+            total_duration_ms,
+        )
+        speaker_result: Optional[FinalSpeakerResult] = None
         async with self.session_factory() as db:
             await self._persist_final_transcript(db, session_id, reconciler, default_speaker_id)
+            if diarization_segments is not None:
+                speaker_result = await self.speaker_pipeline.apply(
+                    db,
+                    session_id,
+                    diarization_segments,
+                    duration_ms=total_duration_ms,
+                )
             await self.validate_ready_invariants(
                 db,
                 session_id,
@@ -1319,6 +1478,24 @@ class JobCoordinator:
                 )
             )
             await db.commit()
+        if speaker_result is not None:
+            await self.event_publisher.broadcast_event(
+                session_id,
+                "speaker.upsert",
+                {
+                    "speaker_count": speaker_result.speaker_count,
+                    "activity_count": speaker_result.activity_count,
+                },
+            )
+            if speaker_result.overlap_count:
+                await self.event_publisher.broadcast_event(
+                    session_id,
+                    "overlap.upsert",
+                    {
+                        "overlap_count": speaker_result.overlap_count,
+                        "unresolved_word_count": speaker_result.unresolved_word_count,
+                    },
+                )
         await self.event_publisher.broadcast_event(
             session_id,
             "session.ready",

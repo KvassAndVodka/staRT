@@ -159,3 +159,7 @@ class FasterWhisperASREngine:
                     raise ASROOMError(f"CUDA OOM and CPU fallback failed: {inner_e}") from inner_e
             else:
                 raise ASREngineError(f"Inference error in FasterWhisper: {e}") from e
+
+    def close(self) -> None:
+        """Release model references before another GPU-bound finalization stage."""
+        self.model = None
