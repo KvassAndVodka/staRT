@@ -27,48 +27,33 @@ export const LiveScreen: React.FC<LiveScreenProps> = ({ sessionId, onFinalized }
   const readyRef = useRef(false);
   const onFinalizedRef = useRef(onFinalized);
   const seenEventIdsRef = useRef<Set<string>>(new Set());
+  const lastSequenceRef = useRef(0);
 
   useEffect(() => {
     onFinalizedRef.current = onFinalized;
   }, [onFinalized]);
-
-  // Poll/Sync session metadata initially
-  useEffect(() => {
-    let isMounted = true;
-    fetchSessionDetail(sessionId)
-      .then((detail) => {
-        if (isMounted) {
-          if (detail.title) setSessionTitle(detail.title);
-          if (detail.turns && detail.turns.length > 0) setTurns(detail.turns);
-          if (detail.status === 'ready') {
-            readyRef.current = true;
-            onFinalizedRef.current(sessionId);
-          }
-        }
-      })
-      .catch((err) => console.error(err));
-
-    return () => {
-      isMounted = false;
-    };
-  }, [sessionId]);
 
   // Connect WebSocket with reconnect backoff
   useEffect(() => {
     let ws: WebSocket | null = null;
     let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
     let isSubscribed = true;
+    let hasSnapshot = false;
     readyRef.current = false;
+    lastSequenceRef.current = 0;
     seenEventIdsRef.current.clear();
 
-    const syncSnapshot = async () => {
+    const syncSnapshot = async (): Promise<boolean> => {
       try {
         const detail = await fetchSessionDetail(sessionId);
-        if (!isSubscribed) return;
+        if (!isSubscribed) return false;
         if (detail.title) setSessionTitle(detail.title);
         setTurns(detail.turns || []);
         setProvisionalWords([]);
-        if (detail.duration_ms) setElapsedMs(detail.duration_ms);
+        if (detail.duration_ms !== null && detail.duration_ms !== undefined) {
+          setElapsedMs(detail.duration_ms);
+        }
+        lastSequenceRef.current = detail.event_sequence;
         if (detail.status === 'ready') {
           readyRef.current = true;
           onFinalizedRef.current(sessionId);
@@ -76,25 +61,55 @@ export const LiveScreen: React.FC<LiveScreenProps> = ({ sessionId, onFinalized }
           setStatus(detail.status as 'connecting' | 'live' | 'finalizing');
         }
         setProcessingMode(detail.processing_mode);
+        return true;
       } catch (err) {
         console.error('[Live WS] Snapshot sync failed:', err);
+        return false;
       }
     };
 
-    const connect = () => {
-      if (!isSubscribed) return;
-      const wsUrl = getWebSocketUrl(sessionId);
-      ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-      ws.onopen = () => {
-        // A snapshot closes any event gap caused by a disconnected socket.
-        void syncSnapshot();
-      };
+    const scheduleReconnect = () => {
+      if (!isSubscribed || readyRef.current || reconnectTimeout) return;
+      reconnectTimeout = setTimeout(() => {
+        reconnectTimeout = null;
+        void connect();
+      }, 2000);
+    };
 
-      ws.onmessage = (event) => {
+    const connect = async () => {
+      if (!isSubscribed) return;
+      if (!hasSnapshot) {
+        hasSnapshot = await syncSnapshot();
+        if (!hasSnapshot) {
+          scheduleReconnect();
+          return;
+        }
+      }
+      if (readyRef.current) return;
+
+      const socket = new WebSocket(getWebSocketUrl(sessionId, lastSequenceRef.current));
+      ws = socket;
+      wsRef.current = socket;
+
+      socket.onmessage = (event) => {
         try {
           const data: WebSocketEvent = JSON.parse(event.data);
           const { type, payload } = data;
+          if (type === 'stream.snapshot_required') {
+            hasSnapshot = false;
+            socket.close();
+            return;
+          }
+          if (
+            !Number.isInteger(data.sequence)
+            || data.sequence !== lastSequenceRef.current + 1
+          ) {
+            if (data.sequence <= lastSequenceRef.current) return;
+            hasSnapshot = false;
+            socket.close();
+            return;
+          }
+          lastSequenceRef.current = data.sequence;
           const eventId = typeof payload.event_id === 'string' ? payload.event_id : null;
           if (eventId) {
             if (seenEventIdsRef.current.has(eventId)) return;
@@ -141,14 +156,15 @@ export const LiveScreen: React.FC<LiveScreenProps> = ({ sessionId, onFinalized }
         }
       };
 
-      ws.onclose = () => {
-        if (isSubscribed && !readyRef.current) {
-          reconnectTimeout = setTimeout(connect, 2000);
-        }
+      socket.onclose = () => {
+        if (wsRef.current === socket) wsRef.current = null;
+        scheduleReconnect();
       };
+
+      socket.onerror = () => socket.close();
     };
 
-    connect();
+    void connect();
 
     return () => {
       isSubscribed = false;

@@ -57,6 +57,7 @@ from app.application.continuity import (
     WordContinuityReconciler,
     ReconciledWord,
 )
+from app.application.event_stream import allocate_event_sequences
 from app.api.websocket import ws_manager
 
 
@@ -184,6 +185,16 @@ class JobCoordinator:
                         .values(status="failed")
                     )
             await db.commit()
+
+        async with self.session_factory() as db:
+            unpublished_result = await db.execute(
+                select(OutboxEventModel.session_id)
+                .where(OutboxEventModel.published_at.is_(None))
+                .distinct()
+            )
+            unpublished_sessions = unpublished_result.scalars().all()
+        for unpublished_session_id in unpublished_sessions:
+            await self._publish_outbox(unpublished_session_id)
 
         await self._check_and_start_next_job()
 
@@ -583,7 +594,7 @@ class JobCoordinator:
                 select(OutboxEventModel)
                 .where(OutboxEventModel.session_id == session_id)
                 .where(OutboxEventModel.published_at.is_(None))
-                .order_by(asc(OutboxEventModel.created_at), asc(OutboxEventModel.id))
+                .order_by(asc(OutboxEventModel.sequence))
             )
             if window_id is not None:
                 statement = statement.where(OutboxEventModel.window_id == window_id)
@@ -727,13 +738,18 @@ class JobCoordinator:
                     completed_at=now,
                 )
             )
+            event_sequences = iter(
+                await allocate_event_sequences(db, session_id, len(events))
+            )
             for suffix, event_type, payload in events:
+                sequence = next(event_sequences)
                 db.add(OutboxEventModel(
                     id=str(uuid.uuid4()),
                     session_id=session_id,
                     window_id=work.id,
                     idempotency_key=f"{work.id}:{suffix}",
                     event_type=event_type,
+                    sequence=sequence,
                     payload=payload,
                 ))
             await db.execute(

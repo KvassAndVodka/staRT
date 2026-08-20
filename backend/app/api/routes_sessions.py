@@ -294,6 +294,8 @@ async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
         audio_assets_count=len(audio_assets_list),
         last_durable_audio_ms=session.last_durable_audio_ms,
         committed_frontier_ms=session.committed_frontier_ms,
+        event_sequence=session.event_sequence,
+        event_replay_floor=session.event_replay_floor,
         training_consent=session.training_consent,
         deleted_at=session.deleted_at
     )

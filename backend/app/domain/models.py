@@ -46,6 +46,8 @@ class SessionModel(Base):
     diarization_model = Column(String(100), nullable=False, default="pyannote-community-1")
     last_durable_audio_ms = Column(Integer, nullable=False, default=0)
     committed_frontier_ms = Column(Integer, nullable=False, default=0)
+    event_sequence = Column(Integer, nullable=False, default=0, server_default="0")
+    event_replay_floor = Column(Integer, nullable=False, default=1, server_default="1")
     training_consent = Column(String(50), nullable=False, default="excluded")  # excluded, candidate, approved, withdrawn
     deleted_at = Column(DateTime, nullable=True)
     purge_after = Column(DateTime, nullable=True)
@@ -216,7 +218,9 @@ class OutboxEventModel(Base):
     __tablename__ = "outbox_events"
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_outbox_idempotency_key"),
+        CheckConstraint("sequence > 0", name="chk_outbox_positive_sequence"),
         Index("ix_outbox_session_published", "session_id", "published_at", "created_at"),
+        Index("uq_outbox_session_sequence", "session_id", "sequence", unique=True),
     )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
@@ -224,6 +228,7 @@ class OutboxEventModel(Base):
     window_id = Column(String(36), ForeignKey("inference_windows.id", ondelete="CASCADE"), nullable=True)
     idempotency_key = Column(String(255), nullable=False)
     event_type = Column(String(100), nullable=False)
+    sequence = Column(Integer, nullable=False)
     payload = Column(JSON, nullable=False)
     created_at = Column(DateTime, nullable=False, default=utc_now)
     published_at = Column(DateTime, nullable=True)
@@ -471,6 +476,8 @@ class SessionDetailSchema(SessionSummarySchema):
     audio_assets_count: int = 0
     last_durable_audio_ms: int = 0
     committed_frontier_ms: int = 0
+    event_sequence: int = 0
+    event_replay_floor: int = 1
     training_consent: str = "excluded"
 
 class SpeakerRenameRequest(BaseModel):

@@ -68,6 +68,8 @@ export interface SessionDetail extends SessionSummary {
   audio_assets_count: number;
   last_durable_audio_ms: number;
   committed_frontier_ms: number;
+  event_sequence: number;
+  event_replay_floor: number;
   training_consent: string;
 }
 
@@ -95,4 +97,5 @@ export interface WebSocketEvent {
   sequence: number;
   payload: Record<string, unknown>;
   version: string;
+  replayed?: boolean;
 }

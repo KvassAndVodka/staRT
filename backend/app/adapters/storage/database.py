@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncGenerator, Any
 
-from sqlalchemy import event, inspect, text
+from sqlalchemy import DateTime, JSON, event, inspect, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
@@ -14,7 +15,7 @@ from app.config import settings
 from app.domain.models import Base
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 engine = create_async_engine(
     settings.DATABASE_URL,
@@ -101,6 +102,22 @@ def _assert_no_duplicate_keys(rows: list[dict[str, Any]], fields: tuple[str, ...
     if duplicates:
         sample = sorted(duplicates, key=repr)[:5]
         raise RuntimeError(f"Cannot migrate {label}: duplicate durable keys found: {sample}")
+
+
+def _coerce_rebuilt_row(table, row: dict[str, Any]) -> dict[str, Any]:
+    """Convert raw SQLite values before inserting through typed SQLAlchemy columns."""
+    converted = dict(row)
+    for column in table.columns:
+        value = converted.get(column.name)
+        if value is None:
+            continue
+        if isinstance(column.type, DateTime) and isinstance(value, str):
+            converted[column.name] = datetime.fromisoformat(
+                value.replace("Z", "+00:00")
+            )
+        elif isinstance(column.type, JSON) and isinstance(value, str):
+            converted[column.name] = json.loads(value)
+    return converted
 
 
 def _rebuild_audio_fragments(conn: Connection) -> None:
@@ -196,7 +213,7 @@ def _rebuild_audio_fragments(conn: Connection) -> None:
     table = Base.metadata.tables["audio_fragments"]
     table.create(conn)
     if converted:
-        conn.execute(table.insert(), converted)
+        conn.execute(table.insert(), [_coerce_rebuilt_row(table, row) for row in converted])
     conn.exec_driver_sql(f"DROP TABLE {legacy_name}")
 
 
@@ -270,8 +287,109 @@ def _rebuild_inference_windows(conn: Connection) -> None:
     table = Base.metadata.tables["inference_windows"]
     table.create(conn)
     if converted:
-        conn.execute(table.insert(), converted)
+        conn.execute(table.insert(), [_coerce_rebuilt_row(table, row) for row in converted])
     conn.exec_driver_sql(f"DROP TABLE {legacy_name}")
+
+
+def _migrate_event_stream(conn: Connection) -> None:
+    """Add session counters and rebuild retained outbox rows with strict order."""
+    inspector = inspect(conn)
+    tables = set(inspector.get_table_names())
+    if "sessions" not in tables:
+        return
+
+    session_columns = {column["name"] for column in inspector.get_columns("sessions")}
+    if "event_sequence" not in session_columns:
+        conn.execute(text(
+            "ALTER TABLE sessions ADD COLUMN event_sequence INTEGER NOT NULL DEFAULT 0"
+        ))
+    if "event_replay_floor" not in session_columns:
+        conn.execute(text(
+            "ALTER TABLE sessions ADD COLUMN event_replay_floor INTEGER NOT NULL DEFAULT 1"
+        ))
+    if "outbox_events" not in tables:
+        return
+
+    outbox_inspector = inspect(conn)
+    reflected_columns = outbox_inspector.get_columns("outbox_events")
+    outbox_columns = {column["name"] for column in reflected_columns}
+    sequence_column = next(
+        (column for column in reflected_columns if column["name"] == "sequence"),
+        None,
+    )
+    constraints = _constraint_names(conn, "outbox_events")
+    unique_keys = _unique_column_sets(conn, "outbox_events")
+    needs_rebuild = (
+        sequence_column is None
+        or bool(sequence_column.get("nullable"))
+        or "chk_outbox_positive_sequence" not in constraints
+        or ("session_id", "sequence") not in unique_keys
+    )
+
+    rows = [dict(row._mapping) for row in conn.execute(text(
+        "SELECT * FROM outbox_events ORDER BY session_id, created_at, id"
+    ))]
+    _assert_no_duplicate_keys(rows, ("idempotency_key",), "outbox events")
+    by_session: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_session.setdefault(row["session_id"], []).append(row)
+
+    converted: list[dict[str, Any]] = []
+    target_columns = {
+        column.name for column in Base.metadata.tables["outbox_events"].columns
+    }
+    stream_state: dict[str, tuple[int, int]] = {}
+    for session_id, session_rows in by_session.items():
+        existing = [
+            int(row["sequence"])
+            for row in session_rows
+            if "sequence" in outbox_columns and row.get("sequence") is not None
+        ]
+        if any(sequence <= 0 for sequence in existing) or len(existing) != len(set(existing)):
+            raise RuntimeError(
+                f"Cannot migrate event stream for session {session_id}: invalid sequences"
+            )
+        next_sequence = max(existing, default=0)
+        assigned_sequences = list(existing)
+        for source in session_rows:
+            row = {key: value for key, value in source.items() if key in target_columns}
+            sequence = source.get("sequence") if "sequence" in outbox_columns else None
+            if sequence is None:
+                next_sequence += 1
+                sequence = next_sequence
+                assigned_sequences.append(sequence)
+            row["sequence"] = int(sequence)
+            converted.append(row)
+        floor = min(assigned_sequences, default=next_sequence + 1)
+        stream_state[session_id] = (next_sequence, floor)
+
+    if needs_rebuild:
+        legacy_name = "outbox_events_legacy_v3"
+        if legacy_name in tables:
+            raise RuntimeError(f"Refusing migration: leftover table {legacy_name} exists")
+        for index in outbox_inspector.get_indexes("outbox_events"):
+            name = index.get("name")
+            if name:
+                escaped_name = str(name).replace('"', '""')
+                conn.exec_driver_sql(f'DROP INDEX IF EXISTS "{escaped_name}"')
+        conn.exec_driver_sql(f"ALTER TABLE outbox_events RENAME TO {legacy_name}")
+        table = Base.metadata.tables["outbox_events"]
+        table.create(conn)
+        if converted:
+            conn.execute(table.insert(), [_coerce_rebuilt_row(table, row) for row in converted])
+        conn.exec_driver_sql(f"DROP TABLE {legacy_name}")
+
+    for session_id, (latest, floor) in stream_state.items():
+        conn.execute(text(
+            "UPDATE sessions SET "
+            "event_sequence=MAX(event_sequence, :latest), "
+            "event_replay_floor=:floor "
+            "WHERE id=:session_id"
+        ), {
+            "latest": latest,
+            "floor": floor,
+            "session_id": session_id,
+        })
 
 
 def _migrate_schema(conn: Connection) -> None:
@@ -301,6 +419,7 @@ def _migrate_schema(conn: Connection) -> None:
 
     _rebuild_audio_fragments(conn)
     _rebuild_inference_windows(conn)
+    _migrate_event_stream(conn)
     Base.metadata.create_all(conn)
     conn.execute(
         text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (:version)"),
