@@ -156,9 +156,11 @@ async def test_non_contiguous_gap_backlog_replay():
             f.write(raw_b)
         frag_hashes[i] = hashlib.sha256(raw_b).hexdigest()
 
-    # Write dummy master and inference audio files
-    with open(audio_dir / "master.m4a", "wb") as f:
+    # Write dummy master, playback, and inference audio files.
+    with open(audio_dir / "master.mka", "wb") as f:
         f.write(b"M4A_DUMMY_HEADER_BYTES" * 10)
+    with open(audio_dir / "playback.m4a", "wb") as f:
+        f.write(b"M4A_PLAYBACK_DUMMY_BYTES" * 10)
     with open(audio_dir / "inference.wav", "wb") as f:
         f.write(b"RIFF" + b"\x00" * 100)
 

@@ -14,7 +14,7 @@ from app.config import settings
 from app.domain.models import Base
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 engine = create_async_engine(
     settings.DATABASE_URL,
@@ -293,6 +293,11 @@ def _migrate_schema(conn: Connection) -> None:
                 "ALTER TABLE sessions ADD COLUMN active_processing_revision "
                 "VARCHAR(50) NOT NULL DEFAULT 'sample-v2'"
             ))
+
+    if "audio_assets" in tables:
+        columns = {column["name"] for column in inspector.get_columns("audio_assets")}
+        if "provenance" not in columns:
+            conn.execute(text("ALTER TABLE audio_assets ADD COLUMN provenance JSON"))
 
     _rebuild_audio_fragments(conn)
     _rebuild_inference_windows(conn)

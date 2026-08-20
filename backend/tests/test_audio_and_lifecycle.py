@@ -66,6 +66,73 @@ async def test_audio_range_requests():
         assert res_invalid.status_code == 416
         assert res_invalid.headers["Content-Range"] == "bytes */100"
 
+
+@pytest.mark.asyncio
+async def test_session_audio_prefers_playback_derivative_and_exposes_provenance():
+    session_id = str(uuid.uuid4())
+    audio_dir = settings.SESSIONS_DIR / session_id / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    master_path = audio_dir / "master.mka"
+    playback_path = audio_dir / "playback.m4a"
+    inference_path = audio_dir / "inference.wav"
+    master_path.write_bytes(b"source-faithful-master")
+    playback_path.write_bytes(b"browser-playback")
+    inference_path.write_bytes(b"RIFF" + b"normalized" * 10)
+    master_id = str(uuid.uuid4())
+
+    async with AsyncSessionLocal() as db:
+        db.add(SessionModel(
+            id=session_id,
+            title="Playback preference",
+            source_url="https://example.com/test.opus",
+            status="ready",
+        ))
+        db.add_all([
+            AudioAssetModel(
+                id=master_id,
+                session_id=session_id,
+                kind="master",
+                status="ready",
+                path=str(master_path),
+                container="matroska",
+                codec="opus",
+                provenance={"operation": "remux", "audio_transcoded": False},
+            ),
+            AudioAssetModel(
+                id=str(uuid.uuid4()),
+                session_id=session_id,
+                kind="playback",
+                status="ready",
+                path=str(playback_path),
+                container="mov",
+                codec="aac",
+                derived_from_id=master_id,
+                provenance={"operation": "transcode", "audio_transcoded": True},
+            ),
+            AudioAssetModel(
+                id=str(uuid.uuid4()),
+                session_id=session_id,
+                kind="inference",
+                status="ready",
+                path=str(inference_path),
+                container="wav",
+                codec="pcm_s16le",
+                derived_from_id=master_id,
+            ),
+        ])
+        await db.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        audio = await ac.get(f"/api/sessions/{session_id}/audio")
+        assets = await ac.get(f"/api/sessions/{session_id}/audio-assets")
+
+    assert audio.status_code == 200
+    assert audio.headers["content-type"].startswith("audio/mp4")
+    assert audio.content == b"browser-playback"
+    payload = {item["kind"]: item for item in assets.json()}
+    assert payload["master"]["provenance"]["audio_transcoded"] is False
+    assert payload["playback"]["derived_from_id"] == master_id
+
 @pytest.mark.asyncio
 async def test_purge_active_session_guard():
     await init_db()

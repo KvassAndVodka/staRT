@@ -17,6 +17,22 @@ from app.domain.models import SessionModel, AudioAssetModel, AudioAssetSchema
 
 router = APIRouter()
 
+
+def _asset_content_type(container: Optional[str], path: Path) -> str:
+    normalized = (container or path.suffix.lstrip(".")).lower()
+    return {
+        "wav": "audio/wav",
+        "m4a": "audio/mp4",
+        "mov": "audio/mp4",
+        "mp4": "audio/mp4",
+        "matroska": "audio/x-matroska",
+        "mka": "audio/x-matroska",
+        "mp3": "audio/mpeg",
+        "ogg": "audio/ogg",
+        "opus": "audio/ogg",
+        "flac": "audio/flac",
+    }.get(normalized, "application/octet-stream")
+
 def validate_path_containment(file_path: Path):
     """Ensure file path is strictly inside the allowed sessions directory using is_relative_to."""
     try:
@@ -140,14 +156,38 @@ async def stream_session_audio(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    asset_result = await db.execute(
+        select(AudioAssetModel).where(AudioAssetModel.session_id == session_id)
+    )
+    assets = asset_result.scalars().all()
+    for kind in ("playback", "inference", "master"):
+        asset = next(
+            (
+                candidate for candidate in assets
+                if candidate.kind == kind and candidate.status not in {"failed", "corrupt", "purged"}
+            ),
+            None,
+        )
+        if asset is None:
+            continue
+        path = Path(asset.path)
+        minimum_size = 44 if kind == "inference" else 0
+        if path.exists() and path.stat().st_size > minimum_size:
+            return range_requests_response(
+                request,
+                path,
+                content_type=_asset_content_type(asset.container, path),
+            )
+
+    # Compatibility fallback for sessions created before the asset ledger.
     session_dir = settings.SESSIONS_DIR / session_id / "audio"
     inference_path = session_dir / "inference.wav"
-    master_path = session_dir / "master.m4a"
+    legacy_master_path = session_dir / "master.m4a"
 
     if inference_path.exists() and inference_path.stat().st_size > 44:
         return range_requests_response(request, inference_path, content_type="audio/wav")
-    elif master_path.exists() and master_path.stat().st_size > 0:
-        return range_requests_response(request, master_path, content_type="audio/mp4")
+    elif legacy_master_path.exists() and legacy_master_path.stat().st_size > 0:
+        return range_requests_response(request, legacy_master_path, content_type="audio/mp4")
     else:
         raise HTTPException(status_code=404, detail="Audio not available for this session yet")
 
@@ -177,7 +217,9 @@ async def list_session_audio_assets(
             channels=a.channels,
             duration_ms=a.duration_ms,
             size_bytes=a.size_bytes,
-            sha256=a.sha256
+            sha256=a.sha256,
+            derived_from_id=a.derived_from_id,
+            provenance=a.provenance,
         ) for a in assets
     ]
 
@@ -197,7 +239,7 @@ async def download_audio_asset(
 
     file_path = Path(asset.path)
     validate_path_containment(file_path)
-    content_type = "audio/wav" if asset.container == "wav" else "audio/mp4"
+    content_type = _asset_content_type(asset.container, file_path)
     return range_requests_response(request, file_path, content_type=content_type)
 
 @router.delete("/audio-assets/{asset_id}")

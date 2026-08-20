@@ -845,9 +845,9 @@ class JobCoordinator:
                     f"Gap {gap.id} does not map epoch boundary "
                     f"{previous_end}..{next_start}"
                 )
-            if next_start <= previous_end:
+            if next_start < previous_end:
                 raise error_type(
-                    f"Epoch {next_epoch} does not advance source time after epoch {previous_epoch}"
+                    f"Epoch {next_epoch} moves backward after epoch {previous_epoch}"
                 )
             if gap.wall_ended_at is None or gap.wall_ended_at < gap.wall_started_at:
                 raise error_type(f"Timeline gap {gap.id} has invalid wall-clock bounds")
@@ -982,7 +982,11 @@ class JobCoordinator:
                 sample_rate,
             )
         async with self.session_factory() as db:
-            for kind in ("master", "inference"):
+            finalized_kinds = ["master"]
+            if "playback" in by_kind:
+                finalized_kinds.append("playback")
+            finalized_kinds.append("inference")
+            for kind in finalized_kinds:
                 asset = by_kind[kind]
                 path = Path(asset.path)
                 info = await adapter.probe_media_file(path)
@@ -999,6 +1003,8 @@ class JobCoordinator:
                 }
                 if kind == "inference":
                     values.update(container="wav", codec="pcm_s16le", channels=1, sample_rate_hz=sample_rate)
+                elif kind == "playback":
+                    values.update(container="mov", codec="aac")
                 await db.execute(
                     update(AudioAssetModel).where(AudioAssetModel.id == asset.id).values(**values)
                 )
@@ -1335,18 +1341,47 @@ class JobCoordinator:
                         status="live",
                     )
                 )
+                master_asset_id = str(uuid.uuid4())
+                playback_asset_id = str(uuid.uuid4())
+                inference_asset_id = str(uuid.uuid4())
+                source_description = {
+                    "source_container": resolved.container,
+                    "source_codec": resolved.codec,
+                }
                 db.add_all([
                     AudioAssetModel(
-                        id=str(uuid.uuid4()),
+                        id=master_asset_id,
                         session_id=session_id,
                         kind="master",
                         status="writing",
                         path=str(adapter.master_path),
-                        container=resolved.container,
-                        codec=resolved.codec,
+                        container=adapter.master_container,
+                        codec=adapter.master_codec or resolved.codec,
+                        provenance={
+                            **source_description,
+                            "operation": adapter.master_operation,
+                            "audio_transcoded": adapter.master_audio_transcoded,
+                        },
                     ),
                     AudioAssetModel(
-                        id=str(uuid.uuid4()),
+                        id=playback_asset_id,
+                        session_id=session_id,
+                        kind="playback",
+                        status="writing",
+                        path=str(adapter.playback_path),
+                        container="m4a",
+                        codec="aac",
+                        derived_from_id=master_asset_id,
+                        provenance={
+                            **source_description,
+                            "operation": "transcode",
+                            "audio_transcoded": True,
+                            "target_codec": "aac",
+                            "target_bitrate": "192k",
+                        },
+                    ),
+                    AudioAssetModel(
+                        id=inference_asset_id,
                         session_id=session_id,
                         kind="inference",
                         status="writing",
@@ -1355,6 +1390,15 @@ class JobCoordinator:
                         codec="pcm_s16le",
                         sample_rate_hz=settings.INFERENCE_SAMPLE_RATE,
                         channels=1,
+                        derived_from_id=master_asset_id,
+                        provenance={
+                            **source_description,
+                            "operation": "normalize_for_inference",
+                            "audio_transcoded": True,
+                            "target_codec": "pcm_s16le",
+                            "target_sample_rate_hz": settings.INFERENCE_SAMPLE_RATE,
+                            "target_channels": 1,
+                        },
                     ),
                 ])
                 await db.commit()
@@ -1437,7 +1481,7 @@ class JobCoordinator:
                             )
                             if (
                                 item.source_start_ms != expected_gap_start
-                                or item.source_end_ms <= item.source_start_ms
+                                or item.source_end_ms < item.source_start_ms
                             ):
                                 raise IngestionError("Discontinuity has invalid source bounds")
                             async with self.session_factory() as db:

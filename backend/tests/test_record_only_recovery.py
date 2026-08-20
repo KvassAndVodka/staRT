@@ -52,6 +52,26 @@ async def _wait_for_mode(session_id: str, expected: str) -> None:
     raise AssertionError(f"Session did not enter {expected}")
 
 
+def test_zero_duration_pts_reset_is_a_valid_epoch_boundary():
+    boundary = datetime.now(timezone.utc)
+    gap = TimelineGapModel(
+        id="pts-reset-gap",
+        session_id="session",
+        source_start_ms=1000,
+        source_end_ms=1000,
+        wall_started_at=boundary,
+        wall_ended_at=boundary,
+        reason="source_pts_reset",
+        details={"previous_stream_epoch": 0, "next_stream_epoch": 1},
+    )
+
+    JobCoordinator._validate_epoch_gap_chain(
+        {0: (0, 1000), 1: (1000, 2000)},
+        [gap],
+        ReadinessValidationError,
+    )
+
+
 @pytest.mark.asyncio
 async def test_record_only_pauses_claims_while_capture_active():
     session_id = str(uuid.uuid4())
@@ -71,7 +91,8 @@ async def test_record_only_pauses_claims_while_capture_active():
     audio_dir = settings.SESSIONS_DIR / session_id / "audio"
     frag_dir.mkdir(parents=True, exist_ok=True)
     audio_dir.mkdir(parents=True, exist_ok=True)
-    (audio_dir / "master.m4a").write_bytes(b"MASTER_DUMMY_DATA" * 10)
+    (audio_dir / "master.mka").write_bytes(b"MASTER_DUMMY_DATA" * 10)
+    (audio_dir / "playback.m4a").write_bytes(b"PLAYBACK_DUMMY_DATA" * 10)
     (audio_dir / "inference.wav").write_bytes(b"RIFF" + b"\x00" * 100)
 
     fragments = []
@@ -168,6 +189,15 @@ async def test_record_only_pauses_claims_while_capture_active():
 
         assert windows[-1].target_end_sample == 160000
         assert all(window.attempt_count == 1 for window in windows)
+        asset_result = await db.execute(
+            select(AudioAssetModel).where(AudioAssetModel.session_id == session_id)
+        )
+        assets = {asset.kind: asset for asset in asset_result.scalars().all()}
+        assert set(assets) == {"master", "playback", "inference"}
+        assert assets["master"].provenance["audio_transcoded"] is False
+        assert assets["playback"].derived_from_id == assets["master"].id
+        assert assets["playback"].provenance["target_codec"] == "aac"
+        assert assets["inference"].derived_from_id == assets["master"].id
 
     assert submitted[0][2] == (1000,)
     assert submitted[-1][2] == (1000, 2000, 3000, 4000, 5000)
@@ -341,7 +371,8 @@ async def test_live_discontinuity_creates_separate_epochs_and_explicit_gap():
     audio_dir = settings.SESSIONS_DIR / session_id / "audio"
     fragment_dir.mkdir(parents=True, exist_ok=True)
     audio_dir.mkdir(parents=True, exist_ok=True)
-    (audio_dir / "master.m4a").write_bytes(b"epoch-master")
+    (audio_dir / "master.mka").write_bytes(b"epoch-master")
+    (audio_dir / "playback.m4a").write_bytes(b"epoch-playback")
     (audio_dir / "inference.wav").write_bytes(b"RIFF" + b"\x00" * 100)
     first_bytes = np.full(16000, 111, dtype=np.int16).tobytes()
     second_bytes = np.full(16000, 222, dtype=np.int16).tobytes()

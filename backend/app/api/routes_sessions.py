@@ -165,7 +165,9 @@ async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
             channels=a.channels,
             duration_ms=a.duration_ms,
             size_bytes=a.size_bytes,
-            sha256=a.sha256
+            sha256=a.sha256,
+            derived_from_id=a.derived_from_id,
+            provenance=a.provenance,
         ) for a in session.audio_assets
     ]
 
