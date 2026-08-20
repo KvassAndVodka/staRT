@@ -24,7 +24,7 @@ Built against [`live-transcription-service-spec-plan.md`](./live-transcription-s
 ### 1. Prerequisites
 - Linux with FFmpeg installed (`ffmpeg -version`)
 - Python 3.11 / 3.12 (managed via `uv` or system Python)
-- Node.js `>=20.9.0` and npm
+- Node.js 24 LTS and npm. Node.js 26 is checked for forward compatibility.
 - NVIDIA GPU (RTX 3050 Ti Mobile 4GB or RTX 3050 6GB recommended; CPU fallback supported)
 
 ### 2. Run Locally
@@ -43,8 +43,12 @@ Built against [`live-transcription-service-spec-plan.md`](./live-transcription-s
 cd backend && .venv/bin/pytest -v
 
 # Frontend lint, typecheck, & production build
-cd ../frontend && npm run lint && npx tsc --noEmit && npm run build
+cd ../frontend && npm run lint && npm run typecheck && npm run build
 ```
+
+GitHub Actions runs the backend suite on Python 3.11 and 3.12.
+It requires frontend checks on Node.js 24 LTS.
+The workflow also runs a non-blocking Node.js 26 typecheck and production build until Node.js 26 enters LTS.
 
 ## Event Delivery Contract
 
