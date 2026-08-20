@@ -17,6 +17,28 @@ export interface Speaker {
   sort_order: number;
 }
 
+export interface SpeakerActivity {
+  id: string;
+  speaker_id: string;
+  speaker_name: string;
+  speaker_color: string;
+  start_ms: number;
+  end_ms: number;
+  confidence?: number | null;
+  stability: 'provisional' | 'committed' | 'finalized';
+  overlap_group?: string | null;
+}
+
+export interface OverlapRegion {
+  id: string;
+  start_ms: number;
+  end_ms: number;
+  speaker_activity_ids: string[];
+  resolution_status: 'detected' | 'mixed_only' | 'separated_tentative' | 'reviewed';
+  hypotheses: Array<Record<string, unknown>>;
+  schema_version: string;
+}
+
 export interface Turn {
   id: string;
   speaker_id?: string | null;
@@ -65,6 +87,8 @@ export interface SessionDetail extends SessionSummary {
   speakers: Speaker[];
   turns: Turn[];
   audio_assets: AudioAsset[];
+  speaker_activities: SpeakerActivity[];
+  overlap_regions: OverlapRegion[];
   audio_assets_count: number;
   last_durable_audio_ms: number;
   committed_frontier_ms: number;

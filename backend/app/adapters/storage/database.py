@@ -15,7 +15,7 @@ from app.config import settings
 from app.domain.models import Base
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 engine = create_async_engine(
     settings.DATABASE_URL,
@@ -392,6 +392,35 @@ def _migrate_event_stream(conn: Connection) -> None:
         })
 
 
+def _migrate_speaker_pipeline_indexes(conn: Connection) -> None:
+    """Add durable identity and interval lookup indexes for final diarization."""
+    tables = set(inspect(conn).get_table_names())
+    if "speakers" in tables:
+        duplicate = conn.execute(text(
+            "SELECT session_id,machine_label,COUNT(*) AS count "
+            "FROM speakers GROUP BY session_id,machine_label HAVING COUNT(*) > 1 LIMIT 1"
+        )).first()
+        if duplicate is not None:
+            raise RuntimeError(
+                "Cannot migrate speakers: duplicate session machine labels found: "
+                f"{(duplicate.session_id, duplicate.machine_label)}"
+            )
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_speakers_session_machine_label "
+            "ON speakers(session_id,machine_label)"
+        ))
+    if "speaker_activities" in tables:
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_speaker_activities_session_interval "
+            "ON speaker_activities(session_id,start_ms,end_ms)"
+        ))
+    if "overlap_regions" in tables:
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_overlap_regions_session_interval "
+            "ON overlap_regions(session_id,start_ms,end_ms)"
+        ))
+
+
 def _migrate_schema(conn: Connection) -> None:
     conn.execute(text(
         "CREATE TABLE IF NOT EXISTS schema_migrations ("
@@ -420,6 +449,7 @@ def _migrate_schema(conn: Connection) -> None:
     _rebuild_audio_fragments(conn)
     _rebuild_inference_windows(conn)
     _migrate_event_stream(conn)
+    _migrate_speaker_pipeline_indexes(conn)
     Base.metadata.create_all(conn)
     conn.execute(
         text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (:version)"),

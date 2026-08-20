@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Play, Pause, Download, Edit2, Check
+  Play, Pause, Download, Edit2, Check, AudioLines
 } from 'lucide-react';
 import { SessionDetail, Turn, Speaker } from '@/types';
 import { fetchSessionDetail, renameSpeaker, editTurn, getSessionAudioUrl } from '@/lib/api';
@@ -154,6 +154,9 @@ export const ReviewStudio: React.FC<ReviewStudioProps> = ({ sessionId, onOpenExp
 
   const durationMs = session.duration_ms || (session.turns.length ? session.turns[session.turns.length - 1].end_ms : 60000);
   const audioSourceUrl = getSessionAudioUrl(session.id);
+  const activityById = new Map(
+    session.speaker_activities.map((activity) => [activity.id, activity])
+  );
 
   return (
     <div style={{ maxWidth: 1080, margin: '0 auto' }}>
@@ -236,6 +239,73 @@ export const ReviewStudio: React.FC<ReviewStudioProps> = ({ sessionId, onOpenExp
           <option value={1.5}>1.5x</option>
         </select>
       </div>
+
+      {session.overlap_regions.length > 0 && (
+        <section className="overlap-panel" aria-labelledby="overlap-heading">
+          <div className="overlap-panel-heading">
+            <div className="overlap-panel-title">
+              <AudioLines size={18} aria-hidden="true" />
+              <div>
+                <h2 id="overlap-heading">Overlap review</h2>
+                <p>These regions contain simultaneous speech. Mixed words remain unattributed.</p>
+              </div>
+            </div>
+            <span className="overlap-count">
+              {session.overlap_regions.length} {session.overlap_regions.length === 1 ? 'region' : 'regions'}
+            </span>
+          </div>
+
+          <div className="overlap-list">
+            {session.overlap_regions.map((region) => {
+              const activities = region.speaker_activity_ids
+                .map((activityId) => activityById.get(activityId))
+                .filter((activity) => activity !== undefined);
+              const speakers = Array.from(
+                new Map(activities.map((activity) => [activity.speaker_id, activity])).values()
+              );
+              const speakerNames = speakers
+                .map((speaker) => speaker.speaker_name)
+                .join(' and ') || 'unresolved speakers';
+              const isActive = currentTimeMs >= region.start_ms
+                && currentTimeMs <= region.end_ms;
+
+              return (
+                <button
+                  type="button"
+                  key={region.id}
+                  className={`overlap-row${isActive ? ' active' : ''}`}
+                  onClick={() => seekToMs(region.start_ms)}
+                  aria-label={`Play overlap at ${formatMs(region.start_ms)} with ${speakerNames}`}
+                >
+                  <span className="overlap-time">
+                    {formatMs(region.start_ms)}–{formatMs(region.end_ms)}
+                  </span>
+                  <span className="overlap-speakers">
+                    {speakers.map((speaker) => (
+                      <span
+                        className="overlap-speaker"
+                        key={speaker.speaker_id}
+                        style={{ color: speaker.speaker_color }}
+                      >
+                        <span
+                          className="overlap-speaker-dot"
+                          style={{ backgroundColor: speaker.speaker_color }}
+                        />
+                        {speaker.speaker_name}
+                      </span>
+                    ))}
+                  </span>
+                  <span className="overlap-status">
+                    {region.resolution_status === 'mixed_only'
+                      ? 'Mixed audio'
+                      : region.resolution_status.replaceAll('_', ' ')}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* Speaker List Legend */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>

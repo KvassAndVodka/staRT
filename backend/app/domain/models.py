@@ -238,6 +238,9 @@ class OutboxEventModel(Base):
 
 class SpeakerModel(Base):
     __tablename__ = "speakers"
+    __table_args__ = (
+        Index("uq_speakers_session_machine_label", "session_id", "machine_label", unique=True),
+    )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     session_id = Column(String(36), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
@@ -294,6 +297,9 @@ class TranscriptTurnModel(Base):
 
 class SpeakerActivityModel(Base):
     __tablename__ = "speaker_activities"
+    __table_args__ = (
+        Index("ix_speaker_activities_session_interval", "session_id", "start_ms", "end_ms"),
+    )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     session_id = Column(String(36), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
@@ -309,6 +315,9 @@ class SpeakerActivityModel(Base):
 
 class OverlapRegionModel(Base):
     __tablename__ = "overlap_regions"
+    __table_args__ = (
+        Index("ix_overlap_regions_session_interval", "session_id", "start_ms", "end_ms"),
+    )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     session_id = Column(String(36), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
@@ -444,6 +453,26 @@ class AudioAssetSchema(BaseModel):
     derived_from_id: Optional[str] = None
     provenance: Optional[Dict[str, Any]] = None
 
+class SpeakerActivitySchema(BaseModel):
+    id: str
+    speaker_id: str
+    speaker_name: str
+    speaker_color: str
+    start_ms: int
+    end_ms: int
+    confidence: Optional[float] = None
+    stability: str
+    overlap_group: Optional[str] = None
+
+class OverlapRegionSchema(BaseModel):
+    id: str
+    start_ms: int
+    end_ms: int
+    speaker_activity_ids: List[str] = Field(default_factory=list)
+    resolution_status: str
+    hypotheses: List[Dict[str, Any]] = Field(default_factory=list)
+    schema_version: str
+
 class SessionCreateRequest(BaseModel):
     url: str
     language_mode: str = "auto-mixed"
@@ -473,6 +502,8 @@ class SessionDetailSchema(SessionSummarySchema):
     speakers: List[SpeakerSchema] = []
     turns: List[TurnSchema] = []
     audio_assets: List[AudioAssetSchema] = []
+    speaker_activities: List[SpeakerActivitySchema] = Field(default_factory=list)
+    overlap_regions: List[OverlapRegionSchema] = Field(default_factory=list)
     audio_assets_count: int = 0
     last_durable_audio_ms: int = 0
     committed_frontier_ms: int = 0

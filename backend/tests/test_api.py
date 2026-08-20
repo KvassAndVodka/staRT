@@ -56,6 +56,8 @@ async def test_session_lifecycle_and_trash():
         detail = get_res.json()
         assert detail["id"] == session_id
         assert "audio_assets" in detail
+        assert detail["speaker_activities"] == []
+        assert detail["overlap_regions"] == []
         assert detail["event_sequence"] == 0
         assert detail["event_replay_floor"] == 1
 

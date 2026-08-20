@@ -135,6 +135,8 @@ async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
             selectinload(SessionModel.words),
             selectinload(SessionModel.audio_assets),
             selectinload(SessionModel.inference_windows),
+            selectinload(SessionModel.speaker_activities),
+            selectinload(SessionModel.overlap_regions),
         )
         .where(SessionModel.id == session_id)
     )
@@ -150,7 +152,7 @@ async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
             display_name=s.display_name,
             color=s.color,
             sort_order=s.sort_order
-        ) for s in session.speakers
+        ) for s in sorted(session.speakers, key=lambda item: (item.sort_order, item.id))
     ]
 
     audio_assets_list = [
@@ -169,6 +171,39 @@ async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
             derived_from_id=a.derived_from_id,
             provenance=a.provenance,
         ) for a in session.audio_assets
+    ]
+    speaker_activities_list = [
+        {
+            "id": activity.id,
+            "speaker_id": activity.speaker_id,
+            "speaker_name": spk_map[activity.speaker_id].display_name,
+            "speaker_color": spk_map[activity.speaker_id].color,
+            "start_ms": activity.start_ms,
+            "end_ms": activity.end_ms,
+            "confidence": activity.confidence,
+            "stability": activity.stability,
+            "overlap_group": activity.overlap_group,
+        }
+        for activity in sorted(
+            session.speaker_activities,
+            key=lambda item: (item.start_ms, item.end_ms, item.id),
+        )
+        if activity.speaker_id in spk_map
+    ]
+    overlap_regions_list = [
+        {
+            "id": region.id,
+            "start_ms": region.start_ms,
+            "end_ms": region.end_ms,
+            "speaker_activity_ids": region.speaker_activity_ids,
+            "resolution_status": region.resolution_status,
+            "hypotheses": region.hypotheses,
+            "schema_version": region.schema_version,
+        }
+        for region in sorted(
+            session.overlap_regions,
+            key=lambda item: (item.start_ms, item.end_ms, item.id),
+        )
     ]
 
     sorted_turns = sorted(session.turns, key=lambda t: t.start_ms)
@@ -291,6 +326,8 @@ async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
         speakers=speakers_list,
         turns=turns_list,
         audio_assets=audio_assets_list,
+        speaker_activities=speaker_activities_list,
+        overlap_regions=overlap_regions_list,
         audio_assets_count=len(audio_assets_list),
         last_durable_audio_ms=session.last_durable_audio_ms,
         committed_frontier_ms=session.committed_frontier_ms,
