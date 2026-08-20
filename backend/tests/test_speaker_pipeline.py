@@ -28,11 +28,11 @@ from app.ports.diarization import DiarizationError, DiarizationSegment
 class FakeDiarizationEngine:
     def __init__(self, segments: list[DiarizationSegment]) -> None:
         self.segments = segments
-        self.calls: list[tuple[str, int]] = []
+        self.calls: list[tuple[str, int, str]] = []
         self.close_count = 0
 
-    async def diarize(self, audio_path, *, duration_ms: int):
-        self.calls.append((str(audio_path), duration_ms))
+    async def diarize(self, audio_path, *, duration_ms: int, model_id: str):
+        self.calls.append((str(audio_path), duration_ms, model_id))
         return self.segments
 
     async def close(self) -> None:
@@ -374,7 +374,7 @@ async def test_coordinator_runs_adapter_on_ready_inference_audio_and_releases_it
         DiarizationSegment("SPEAKER_00", 500, 1000, 0.9),
         DiarizationSegment("SPEAKER_00", 2000, 2500, 0.9),
     ]
-    assert engine.calls == [(str(audio_path), 2000)]
+    assert engine.calls == [(str(audio_path), 2000, "pyannote-community-1")]
     assert engine.close_count == 1
 
 

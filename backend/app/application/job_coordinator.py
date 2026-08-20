@@ -47,6 +47,7 @@ from app.adapters.asr.faster_whisper_engine import (
     ASREngineError,
     HypothesisWord,
 )
+from app.adapters.diarization import build_configured_diarization_engine
 from app.application.inference_worker import InferenceWorker
 from app.application.audio_window_assembler import (
     VerifiedAudioWindowAssembler,
@@ -1298,6 +1299,9 @@ class JobCoordinator:
         gc.collect()
 
         async with self.session_factory() as db:
+            session = await db.get(SessionModel, session_id)
+            if session is None:
+                raise DiarizationError("The diarization session does not exist")
             result = await db.execute(
                 select(AudioAssetModel)
                 .where(AudioAssetModel.session_id == session_id)
@@ -1327,6 +1331,7 @@ class JobCoordinator:
             raw_segments = await self.diarization_engine.diarize(
                 path,
                 duration_ms=audio_duration_ms,
+                model_id=session.diarization_model,
             )
             return self._map_diarization_segments(raw_segments, timeline)
         finally:
@@ -2075,4 +2080,4 @@ class JobCoordinator:
         await self._check_and_start_next_job()
 
 
-coordinator = JobCoordinator()
+coordinator = JobCoordinator(diarization_engine=build_configured_diarization_engine())

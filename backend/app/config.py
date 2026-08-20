@@ -56,6 +56,17 @@ class Settings(BaseSettings):
     DEFAULT_DEVICE: str = "cuda"
     DEFAULT_COMPUTE_TYPE: str = "int8_float16"  # 'int8_float16' for CUDA, 'int8' for CPU
     FALLBACK_DEVICE: str = "cpu"
+
+    # Optional whole-session speaker diarization
+    ENABLE_FINAL_DIARIZATION: bool = False
+    DEFAULT_DIARIZATION_MODEL: str = "pyannote-community-1"
+    FINAL_DIARIZATION_MODEL_SOURCE: Path | None = None
+    FINAL_DIARIZATION_DEVICE: str = "cuda"
+    FINAL_DIARIZATION_TELEMETRY: bool = False
+
+    @property
+    def final_diarization_model_path(self) -> Path:
+        return self.FINAL_DIARIZATION_MODEL_SOURCE or self.MODELS_DIR / "pyannote-community-1"
     
     # Continuity & Streaming Presets
     WINDOW_DURATION_SEC: float = 20.0

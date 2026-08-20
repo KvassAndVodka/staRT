@@ -37,6 +37,7 @@ class DiarizationEngine(Protocol):
         audio_path: Path,
         *,
         duration_ms: int,
+        model_id: str,
     ) -> Sequence[DiarizationSegment]: ...
 
     def capabilities(self) -> DiarizationCapabilities: ...
