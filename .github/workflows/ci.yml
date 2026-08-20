@@ -116,6 +116,23 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps --only-shell chromium
+
+      - name: Run frontend smoke tests
+        run: npm run test:e2e
+
+      - name: Upload Playwright failure artifacts
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-failure-node-24
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
   frontend-node-26:
     name: Frontend / Node 26 current
     if: github.event_name == 'pull_request'
